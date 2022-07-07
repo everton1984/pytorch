@@ -4,12 +4,13 @@ from typing import Any, Union, Sequence, Optional, Tuple, List, Callable, Type
 from enum import Enum
 from functools import reduce, cmp_to_key
 import operator
-from torch._subclasses.fake_tensor import FakeTensor
+import weakref
+from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
 
 import torch
 
-# nvFuser imports are conditional on CUDA being available
-if torch.cuda.is_available():
+# nvFuser imports are conditional on being compiled with CUDA
+if hasattr(torch._C, "_nvfuser"):
     from torch._C._nvfuser import DataType  # type: ignore[import]
 
     _torch_dtype_to_nvfuser_dtype_map = {
@@ -22,12 +23,17 @@ if torch.cuda.is_available():
         torch.long: DataType.Int,
         torch.int: DataType.Int32,
         torch.bool: DataType.Bool,
+        # Python scalars
+        complex: DataType.ComplexDouble,
+        float: DataType.Double,
+        int: DataType.Int,
+        bool: DataType.Bool,
     }
 else:
     _torch_dtype_to_nvfuser_dtype_map = {}
 
 
-def getnvFuserDtype(dtype: torch.dtype):
+def getnvFuserDtype(dtype: Union[torch.dtype, NumberTypeType]):
     """
     Translates from torch.dtype to nvFuser's DataType enum
     """
@@ -38,6 +44,7 @@ ShapeType = Union[torch.Size, List[int], Tuple[int, ...]]
 StrideType = Union[List[int], Tuple[int, ...]]
 DimsType = Union[int, List[int], Tuple[int, ...]]
 DimsSequenceType = Union[List[int], Tuple[int, ...]]
+NumberTypeType = Union[Type[bool], Type[int], Type[float], Type[complex]]
 NumberType = Union[bool, int, float, complex]
 Number = (bool, int, float, complex)
 DeviceLikeType = Union[str, torch.device]
@@ -60,6 +67,27 @@ TensorLikeType = torch.Tensor
 TensorLike = torch.Tensor
 TensorSequenceType = Union[List[TensorLikeType], Tuple[TensorLikeType, ...]]
 TensorOrNumberLikeType = Union[TensorLikeType, NumberType]
+
+
+# In order to keep things like aliasing relationships and storage
+# consistent wrt/meta tensors, FakeTensors own a FakeTensorMode
+# which caches conversions to Meta Tensors. We would like to use
+# one consistent mode among along FakeTensors, which we store here.
+# We store a weakref, so that when all previous FakeTensors are
+# the present mode will also deallocate. FakeTensorMode holds onto
+# tensors that are converted to Meta so we don't want to persist it
+# longer than necessary.x
+prim_fake_mode_ref = None
+
+
+def get_prim_fake_mode():
+    global prim_fake_mode_ref
+    if prim_fake_mode_ref is None or prim_fake_mode_ref() is None:
+        mode = FakeTensorMode()
+        prim_fake_mode_ref = weakref.ref(mode)
+        return mode
+    else:
+        return prim_fake_mode_ref()
 
 
 def TensorMeta(
@@ -102,9 +130,30 @@ def TensorMeta(
     if isinstance(device, str):
         device = torch.device(device)
 
-    return FakeTensor(
-        torch.empty_strided(shape, strides, dtype=dtype, device="meta"), device
-    )
+    if isinstance(tensorlike, FakeTensor):
+        mode = tensorlike.fake_mode
+    else:
+        mode = get_prim_fake_mode()
+
+    if device.type == "meta":
+        return torch.empty_strided(shape, strides, dtype=dtype, device="meta")
+    else:
+        return FakeTensor(
+            mode,
+            torch.empty_strided(shape, strides, dtype=dtype, device="meta"),
+            device,
+        )
+
+
+def same_shape(a: ShapeType, b: ShapeType) -> bool:
+    if len(a) != len(b):
+        return False
+
+    for x, y in zip(a, b):
+        if x != y:
+            return False
+
+    return True
 
 
 # TODO: look at using torch.testing.assert_close instead with an option
@@ -120,10 +169,9 @@ def compare_tensor_meta(a: TensorLikeType, b: TensorLikeType):
     assert isinstance(a, TensorLike)
     assert isinstance(b, TensorLike)
 
-    for x, y in zip(a.shape, b.shape):
-        if x != y:
-            msg = "Shapes {0} and {1} are not equal!".format(a.shape, b.shape)
-            raise AssertionError(msg)
+    if not same_shape(a.shape, b.shape):
+        msg = "Shapes {0} and {1} are not equal!".format(a.shape, b.shape)
+        raise AssertionError(msg)
 
     if a.dtype != b.dtype:
         msg = "Dtypes {0} and {1} are not equal!".format(a.dtype, b.dtype)
@@ -597,19 +645,23 @@ def dtype_to_type(dtype: torch.dtype) -> type:
     raise ValueError("Invalid dtype!")
 
 
-_type_to_dtype_map = {
-    bool: torch.bool,
-    int: torch.int64,
-    float: torch.float64,
-    complex: torch.complex128,
-}
-
-
 def type_to_dtype(typ: type) -> torch.dtype:
     """
     Computes the corresponding dtype for a Number type.
     """
-    return _type_to_dtype_map[typ]
+
+    assert isinstance(typ, type)
+
+    if typ is bool:
+        return torch.bool
+    if typ is int:
+        return torch.long
+    if typ is float:
+        return torch.get_default_dtype()
+    if typ is complex:
+        return corresponding_complex_dtype(torch.get_default_dtype())
+
+    raise ValueError("Invalid type!")
 
 
 _ordered_types = (bool, int, float, complex)
