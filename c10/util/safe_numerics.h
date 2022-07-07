@@ -10,10 +10,20 @@
 #ifdef _MSC_VER
 #define C10_HAS_BUILTIN_OVERFLOW() (0)
 #include <c10/util/llvmMathExtras.h>
+#if !defined(_M_ARM64)
 #include <intrin.h>
+#else
+#include <arm64intr.h>
+#endif
 #else
 #define C10_HAS_BUILTIN_OVERFLOW() (1)
 #endif
+
+inline uint64_t add_carry(const uint64_t carry, const uint64_t a, const uint64_t b, uint64_t &sum)
+{
+    sum = a + b + carry;
+    return a > UINT32_MAX - b;
+}
 
 namespace c10 {
 
@@ -22,7 +32,11 @@ C10_ALWAYS_INLINE bool add_overflows(uint64_t a, uint64_t b, uint64_t* out) {
   return __builtin_add_overflow(a, b, out);
 #else
   unsigned long long tmp;
+  #if !defined(_M_ARM64)
   auto carry = _addcarry_u64(0, a, b, &tmp);
+  #else
+  auto carry = add_carry(0, a, b, tmp);
+  #endif
   *out = tmp;
   return carry;
 #endif
