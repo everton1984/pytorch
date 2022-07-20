@@ -93,13 +93,21 @@ TEST(ClassTypeTest, IdenticalTypesDifferentCus) {
   } catch (const std::exception& e) {
     // Check that the exception contains the address of the compilation unit
     // in addition to the ClassType's name.
+#ifdef _MSC_VER
+    testing::FileCheck()
+        .check("foo (of Python compilation unit at: 0")
+        ->check_same(")")
+        ->check("foo (of Python compilation unit at: 0")
+        ->check_same(")")
+        ->run(e.what());
+#else
     testing::FileCheck()
         .check("foo (of Python compilation unit at: 0x")
         ->check_same(")")
         ->check("foo (of Python compilation unit at: 0x")
         ->check_same(")")
         ->run(e.what());
-
+#endif
     return;
   }
 
