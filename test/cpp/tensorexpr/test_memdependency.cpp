@@ -2429,6 +2429,13 @@ TEST(MemDependency, MemDependencyCheckerDynamicShapes) {
     auto history = analyzer.getHistory();
     ASSERT_EQ(history.size(), 6);
 
+    analyzer.dumpDAG("DOT2");
+    for(auto i = 0; i < history.size(); i++)
+    {
+      history[i]->print();
+      // history[i]->dumpDOT(std::cout);
+    }
+
     // The store depends on both loads, the load of A depends on the load of B.
     ASSERT_TRUE(history[4]->hasDependency(history[2]));
     ASSERT_TRUE(history[4]->hasDependency(history[3]));
@@ -2733,15 +2740,25 @@ TEST(MemDependency, MemDependencyCheckerMultiDim) {
     // 6 accesses: 2 inputs, 2 loads, store, output.
     auto history = analyzer.getHistory();
     ASSERT_EQ(history.size(), 6);
-
+    analyzer.dumpDAG("DOT");
+    for(auto i = 0; i < history.size(); i++)
+    {
+      history[i]->print();
+      auto isInput = history[i]->type() == AccessType::Input;
+      std::cout << "IsInput: " << ( isInput ? "True" : "False") << std::endl;
+      if(isInput)
+      {
+        std::cout << history[i]->var()->dtype() << std::endl;
+      }
+    }
     // Simple chain from input to output over the A buf.
     // history[0] is the C input, history[3] is the load from C.
     ASSERT_TRUE(history[5]->hasDependency(history[4]));
     ASSERT_TRUE(history[4]->hasDependency(history[2]));
-    ASSERT_TRUE(history[2]->hasDependency(history[1]));
+    ASSERT_TRUE(history[2]->hasDependency(history[0]));//1]));
     // The store also depends on the load from the C input.
     ASSERT_TRUE(history[4]->hasDependency(history[3]));
-    ASSERT_TRUE(history[3]->hasDependency(history[0]));
+    ASSERT_TRUE(history[3]->hasDependency(history[1]));//0]));
 
     // A Buf accesses.
     ASSERT_TRUE(
